@@ -39,7 +39,6 @@ python main.py
 
 ## ⚙️ Configuration
 
-- 🎨 Figma File ID: XJKgTtVpFjjOTBflzj4vTc
 
 ## 📝 Notes
 
