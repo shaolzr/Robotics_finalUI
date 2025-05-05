@@ -1,10 +1,11 @@
 import sys
 import os
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QGraphicsDropShadowEffect
+    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QGraphicsDropShadowEffect, QTextEdit, QMessageBox, QScrollArea, QVBoxLayout, QTextBrowser
 )
-from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, pyqtProperty
-from PyQt6.QtGui import QPixmap, QFont, QPainter, QColor, QPainterPath
+from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, pyqtProperty, pyqtSignal
+from PyQt6.QtGui import QPixmap, QFont, QPainter, QColor, QPainterPath, QFontDatabase
+import voice_to_json
 
 BG_COLOR = "#F7F7F7"
 CARD_COLOR = "#FFFFFF"
@@ -18,31 +19,54 @@ class CardWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
 class ChatMessage(QWidget):
-    def __init__(self, is_bot, text, parent=None):
+    def __init__(self, is_bot, text, parent=None, json_data=None):
         super().__init__(parent)
-        self.setFixedHeight(56)
         self.setFixedWidth(373-16)
-        font = QFont("Press Start 2P", 12)
-        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
         icon = QLabel(self)
         icon.setFixedSize(24, 24)
-        msg = QLabel(text, self)
-        msg.setFont(font)
-        msg.setWordWrap(True)
+        # 用QTextBrowser显示消息内容，支持行距
+        msg = QTextBrowser(self)
+        msg.setHtml(f"<div style='color:#111; font-family:\"{MainWindow.PIXEL_FONT_FAMILY}\"; font-size:10pt; line-height:1.3'>{text}</div>")
         msg.setFixedWidth(289)
-        msg.setStyleSheet("color: #111;")
+        msg.setStyleSheet("background: transparent; border: none;")
+        msg.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        msg.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        msg.setMaximumHeight(100)
+        msg.setMinimumHeight(24)
+        msg.setReadOnly(True)
+        self.json_data = json_data
         if is_bot:
             icon.setPixmap(QPixmap("assets/robot.png").scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio))
             icon.move(24, 16)
             msg.move(56, 16)
             msg.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            if json_data:
+                self.show_json_btn = QPushButton("Show JSON", self)
+                self.show_json_btn.setStyleSheet("font-size:10px;padding:2px 8px;")
+                self.show_json_btn.move(56, 16+msg.sizeHint().height()+8)
+                self.show_json_btn.clicked.connect(self.show_json)
+                self.setFixedHeight(56 + 32)
+            else:
+                self.setFixedHeight(56)
         else:
             icon.setPixmap(QPixmap("assets/human.png").scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio))
             icon.move(325, 16)
             msg.move(24, 16)
             msg.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.setFixedHeight(56)
+        self.msg = msg
+    def show_json(self):
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Command JSON")
+        dlg.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        dlg.setText(f"<pre>{self.json_data}</pre>")
+        dlg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dlg.setStyleSheet(f"QLabel {{ font-family: '{MainWindow.PIXEL_FONT_FAMILY}', monospace; font-size: 12px; }}")
+        dlg.exec()
 
 class VoiceButtonWidget(QWidget):
+    # 新增信号
+    resultReady = pyqtSignal(str, str)
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(385, 80)  # 比按钮大，留出阴影
@@ -89,6 +113,8 @@ class VoiceButtonWidget(QWidget):
         self.micro_muted = False
         # 整个控件也可点击（兼容性）
         self.mousePressEvent = self.start_wave_anim
+        self.audio_path = None
+        self.timestamp = None
 
     def eventFilter(self, obj, event):
         if obj == self.base and not self.wave_animating and not self.micro_muted:
@@ -114,6 +140,8 @@ class VoiceButtonWidget(QWidget):
             self.base.mousePressEvent = lambda e: None
             self.micro_label.mousePressEvent = None
             self.base.setStyleSheet("background: #fff; border-radius: 20px;")
+            # 开始录音
+            voice_to_json.start_recording()
 
     def show_wave(self):
         # wave_L1/wave_R1 or wave_L2/wave_R2，宽116高16
@@ -147,6 +175,17 @@ class VoiceButtonWidget(QWidget):
         self.micro_label.setPixmap(QPixmap("assets/micro_mute.png").scaled(20, 20, Qt.AspectRatioMode.KeepAspectRatio))
         self.micro_muted = True
         self.check_btn.hide()
+        # 停止录音并处理
+        audio_path, timestamp = voice_to_json.stop_recording()
+        self.audio_path = audio_path
+        self.timestamp = timestamp
+        if audio_path and timestamp:
+            def on_result(transcript, json_result, error=None):
+                if error:
+                    transcript = f"Error: {error}"
+                    json_result = ""
+                self.resultReady.emit(transcript, json_result)
+            voice_to_json.threaded_process(audio_path, timestamp, on_result)
         # 点击micro_mute可回到初始状态
         self.micro_label.mousePressEvent = self.reset_to_initial
 
@@ -275,6 +314,7 @@ class RobotStatusWidget(QWidget):
                 painter.drawPixmap(672, anim_y, turtle_pix)
 
 class MainWindow(QMainWindow):
+    PIXEL_FONT_FAMILY = "Press Start 2P"
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Robot Control Interface")
@@ -285,22 +325,85 @@ class MainWindow(QMainWindow):
     def setup_ui(self):
         # 左侧对话区
         self.left_card = CardWidget(60, 60, 373, 630, self)  # 750-120
-        # 聊天内容
-        bot_msg = ChatMessage(True, "Hi, How can I help you today?", self.left_card)
-        bot_msg.move(0, 32)
-        human_msg = ChatMessage(False, "Please get a pen from Jack's desk.", self.left_card)
-        human_msg.move(0, 104)
+        # 聊天内容区用QScrollArea+QVBoxLayout
+        self.scroll_area = QScrollArea(self.left_card)
+        self.scroll_area.setGeometry(0, 0, 373, 630-100)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("background:transparent; border:none;")
+        self.chat_area = QWidget()
+        self.chat_layout = QVBoxLayout(self.chat_area)
+        self.chat_layout.setContentsMargins(0, 24, 0, 24)
+        self.chat_layout.setSpacing(16)
+        self.scroll_area.setWidget(self.chat_area)
+        # 初始机器人消息
+        self.add_bot_message("Hi, How can I help you today?")
         # 底部语音按钮
         self.voice_btn = VoiceButtonWidget(self.left_card)
         self.voice_btn.move((373-385)//2, 630-80-8)
+        self.voice_btn.resultReady.connect(self.on_voice_result)
         # 右侧进度区
         self.right_card = CardWidget(1280-60-766, 60, 766, 630, self)
         self.status_widget = RobotStatusWidget(self.right_card)
         self.status_widget.move(0, 0)
 
+    def add_user_message(self, text):
+        msg = ChatMessage(False, text, self.chat_area)
+        self.chat_layout.addWidget(msg)
+        self._scroll_to_bottom()
+
+    def add_bot_message(self, text, json_data=None):
+        msg = ChatMessage(True, text, self.chat_area, json_data=json_data)
+        self.chat_layout.addWidget(msg)
+        self._scroll_to_bottom()
+
+    def _scroll_to_bottom(self):
+        bar = self.scroll_area.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def on_voice_result(self, transcript, json_result):
+        # 添加用户消息
+        self.add_user_message(transcript)
+        # 生成自然语言回复
+        bot_reply = self.generate_bot_reply(json_result)
+        self.add_bot_message(bot_reply, json_data=json_result)
+
+    def generate_bot_reply(self, json_result):
+        import json as _json
+        try:
+            data = _json.loads(json_result)
+            # 如果data本身就是目标字符串，直接返回
+            if isinstance(data, str) and data.strip() == "This input seems not to be a clear instruction. Please try again.":
+                return data
+            if isinstance(data, dict):
+                obj = data.get("object", "item")
+                loc = data.get("location", "somewhere")
+                rec = data.get("recipient", "you")
+                # recipient为'me'时用'you'，否则用原文
+                if isinstance(rec, str) and rec.strip().lower() == "me":
+                    rec_disp = "you"
+                else:
+                    rec_disp = rec
+                return f"OK, I will fetch {obj} from {loc} for {rec_disp}."
+            else:
+                return str(json_result)
+        except Exception:
+            if "not a clear instruction" in str(json_result):
+                return "Sorry, I could not understand your command."
+            return str(json_result)
 
 def main():
     app = QApplication(sys.argv)
+    # 用绝对路径注册字体
+    font_path = os.path.join(os.path.dirname(__file__), "fonts", "PressStart2P-Regular.ttf")
+    print("Font path exists:", os.path.exists(font_path))
+    font_id = QFontDatabase.addApplicationFont(font_path)
+    families = QFontDatabase.applicationFontFamilies(font_id)
+    print("Loaded font families:", families)
+    if families:
+        MainWindow.PIXEL_FONT_FAMILY = families[0]
+    else:
+        print("❌ Failed to load pixel font, falling back to Courier")
+        MainWindow.PIXEL_FONT_FAMILY = "Courier"
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
