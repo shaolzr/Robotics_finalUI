@@ -11,11 +11,6 @@ A robot control interface developed with PyQt6, designed to display and simulate
 - 📊 Right status display area showing robot workflow
 - 🎬 Animation effects including robot movement and robotic arm operation
 
-## 📐 Interface Layout
-- 🖥️ Window size: 1280x750
-- ⬅️ Left dialogue area: 373x630
-- ➡️ Right status area: 766x630
-- 🎤 Voice button: 385x80
 
 ## 🔄 State Flow
 1. ⏳ Waiting to Start...
@@ -36,8 +31,6 @@ source venv/bin/activate
 # Run the program
 python main.py
 ```
-
-## ⚙️ Configuration
 
 
 ## 📝 Notes
