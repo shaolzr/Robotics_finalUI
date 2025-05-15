@@ -6,3 +6,4 @@
 *.pyw
 *.pyz
 *.wav
+.venv

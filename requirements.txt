@@ -1,9 +1,10 @@
 numpy
 numpydoc
-openai
-PyQt6 --only-binary=:all:
+openai>=1.0.0
+PyQt6>=6.4.0
 scipy
 sounddevice==0.5.1
 rospkg
 PyYAML
 pyaudio
+pygame>=2.5.0

@@ -10,6 +10,41 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, pyqtProperty, pyqtSignal
 from PyQt6.QtGui import QPixmap, QFont, QPainter, QColor, QPainterPath, QFontDatabase
 import voice_to_json
+from pathlib import Path
+from openai import OpenAI
+import pygame  # 用于播放音频
+
+# 初始化OpenAI客户端
+client = OpenAI()
+
+# 初始化pygame音频
+pygame.mixer.init()
+
+def text_to_speech(text):
+    """将文本转换为语音并播放"""
+    try:
+        # 创建语音文件路径
+        speech_file_path = Path(__file__).parent / "robot_speech.mp3"
+        
+        # 生成语音文件
+        with client.audio.speech.with_streaming_response.create(
+            model="gpt-4o-mini-tts",
+            voice="coral",
+            input=text,
+            instructions="Speak in a cheerful and positive tone.",
+        ) as response:
+            response.stream_to_file(speech_file_path)
+        
+        # 播放语音
+        pygame.mixer.music.load(str(speech_file_path))
+        pygame.mixer.music.play()
+        
+        # 等待音频播放完成
+        while pygame.mixer.music.get_busy():
+            pygame.time.Clock().tick(10)
+            
+    except Exception as e:
+        print(f"TTS错误: {str(e)}")
 
 print("=== 程序开始运行 ===")
 
@@ -21,6 +56,10 @@ window = None
 def signal_handler(signum, frame):
     print("\n正在关闭程序...")
     try:
+        # 停止所有音频播放
+        pygame.mixer.music.stop()
+        pygame.mixer.quit()
+        
         # 关闭 ROS 节点
         if rospy.is_initialized():
             print("正在关闭 ROS 节点...")
@@ -475,6 +514,14 @@ class MainWindow(QMainWindow):
         msg = ChatMessage(True, text, self.chat_area, json_data=json_data)
         self.chat_layout.addWidget(msg)
         self._scroll_to_bottom()
+        
+        # 使用TTS播放机器人回复
+        try:
+            # 在新线程中运行TTS，避免阻塞UI
+            import threading
+            threading.Thread(target=text_to_speech, args=(text,), daemon=True).start()
+        except Exception as e:
+            print(f"TTS线程启动失败: {str(e)}")
 
     # 滚动到聊天区底部
     def _scroll_to_bottom(self):
@@ -510,14 +557,22 @@ class MainWindow(QMainWindow):
     def generate_bot_reply(self, data):
         import json as _json
         try:
-            # 处理特殊响应
+            # # 处理特殊响应
+            # if isinstance(data, str):
+            #     if data.strip() == "This input seems not to be a clear instruction. Please try again.":
+            #         return data
+            #     elif data.strip() == "Start":
+            #         return "The robot starts working"
+            #     elif data.strip() == "Invalid":
+            #         return "Your destination is not available now. Please choose one from [\"sofa\", \"sink\", \"elevator\", \"lab\", \"wall\"]"
+             # 处理特殊响应
             if isinstance(data, str):
-                if data.strip() == "This input seems not to be a clear instruction. Please try again.":
-                    return data
-                elif data.strip() == "Start":
+                if data.strip() == "Start":
                     return "The robot starts working"
                 elif data.strip() == "Invalid":
                     return "Your destination is not available now. Please choose one from [\"sofa\", \"sink\", \"elevator\", \"lab\", \"wall\"]"
+                else:
+                    return data
             
             # 处理JSON响应
             if isinstance(data, dict):

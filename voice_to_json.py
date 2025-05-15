@@ -93,8 +93,10 @@ Use the following format:
 }
 
 end of JSON format.
-If the text is not like a command to robots, return "This input seems not to be a clear instruction. Please try again."
+
+Before concluding the text is not a valid command, double-check it carefully. If you are certain, then return your judgement along with the reasoning.
 """
+# If the text is not like a command to robots, return "This input seems not to be a clear instruction. Please try again."
     response = client.chat.completions.create(
         model="gpt-4",
         messages=[
