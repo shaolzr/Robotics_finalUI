@@ -34,9 +34,19 @@ def start_recording():
             print(status)
         recording.append(indata.copy())
 
-    recording_stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=callback)
-    recording_stream.start()
-    print("🎙️ Recording started...")
+    try:
+        recording_stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            callback=callback,
+            device=0,  # 使用默认设备
+            blocksize=1024
+        )
+        recording_stream.start()
+        print("🎙️ Recording started...")
+    except Exception as e:
+        print(f"Error starting recording: {str(e)}")
+        return None
 
 
 def stop_recording():
@@ -77,7 +87,7 @@ Use the following format:
   "intent": "fetch_item",
   "location": "Jack's office",
   "object": "a laptop",
-  "recipient": "me",
+  "destination": "sofa",
   "time": "now",
   "priority": "high"
 }
