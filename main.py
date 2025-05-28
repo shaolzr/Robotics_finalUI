@@ -418,43 +418,48 @@ class MapWidget(QWidget):
         map_pix = QPixmap("assets/farm.jpg")
         print("farm.png isNull:", map_pix.isNull())
         if not map_pix.isNull():
-            map_label.setPixmap(map_pix)
-            # The map image size is 766x630. Adjust its size to fit the new widget size proportionally if needed.
-            # For now, let's keep it centered but within the new 1000x740 boundaries.
-            map_label.resize(map_pix.width(), map_pix.height())
+            # 使用 scaled 方法将地图放大到原来的1.2倍
+            scaled_pix = map_pix.scaled(
+                int(map_pix.width() * 1.1),
+                int(map_pix.height() * 1.1),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            map_label.setPixmap(scaled_pix)
+            map_label.resize(scaled_pix.width(), scaled_pix.height())
             # Adjust position based on the new widget size (1000x740) to keep it centered.
             # The original image was 766x630, new container is 1000x740
             # Center X: (1000 - 766) // 2 = 117
             # Center Y: (740 - 630) // 2 = 55
             # Original offset: +20, +65
             # New position: 117 + 20 = 137, 55 + 65 = 120
-            map_label.move(137, 120)
+            map_label.move(120, 40)  # 将 y 坐标从 120 改为 80，使图片位置更高
         else:
             map_label.setText("图片未找到")
             map_label.move((1000 - 100) // 2, (740 - 30) // 2)
 
-        # 右侧白框顶部居中显示标题
-        title_label = QLabel("GIX Community Farm", self)
-        # Use the pixel font defined in MainWindow
-        title_font = QFont(MainWindow.PIXEL_FONT_FAMILY, 18)
-        title_label.setFont(title_font)
-        # 设置行高和字间距（部分属性QLabel不支持，但letter-spacing可用px近似）
-        title_label.setStyleSheet("color: #111; letter-spacing: -0.54px; line-height: 20px;")
-        title_label.adjustSize()
-        # 居中放置，距离顶部30px
-        # Center X based on new widget size: (1000 - title_label.width()) // 2
-        title_label.move((1000 - title_label.width()) // 2, 30 + 30)
+        # # 右侧白框顶部居中显示标题
+        # title_label = QLabel("GIX Community Farm", self)
+        # # Use the pixel font defined in MainWindow
+        # title_font = QFont(MainWindow.PIXEL_FONT_FAMILY, 18)
+        # title_label.setFont(title_font)
+        # # 设置行高和字间距（部分属性QLabel不支持，但letter-spacing可用px近似）
+        # title_label.setStyleSheet("color: #111; letter-spacing: -0.54px; line-height: 20px;")
+        # title_label.adjustSize()
+        # # 居中放置，距离顶部30px
+        # # Center X based on new widget size: (1000 - title_label.width()) // 2
+        # title_label.move((1000 - title_label.width()) // 2, 30 + 30)
 
         # Calculate the transformation matrix (Actual -> Pixel)
         # 直接用线性系数
-        self.x_coef = 20.7432
-        self.x_bias = 437.4537
-        self.y_coef = -23.8226
-        self.y_bias = 639.2829
+        self.x_coef = 23.0517
+        self.x_bias = 444.2938
+        self.y_coef =-26.1760
+        self.y_bias = 617.8261
 
         # Add robot image
         self.robot_label = QLabel(self)
-        robot_pixmap = QPixmap("/home/yuzhez23@netid.washington.edu/Robotics_finalUI/assets/turtle1.png")
+        robot_pixmap = QPixmap("./assets/turtle1.png")
         if not robot_pixmap.isNull():
             # Scale the robot image if needed, e.g., to 30x30
             scaled_robot_pixmap = robot_pixmap.scaled(30, 30, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
