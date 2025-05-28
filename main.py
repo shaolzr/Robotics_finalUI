@@ -1,11 +1,8 @@
 import sys
 import os
-import rospy
 import signal
-from std_msgs.msg import String
-from string_service_demo.srv import StringService
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QGraphicsDropShadowEffect, QTextEdit, QMessageBox, QScrollArea, QVBoxLayout, QTextBrowser
+    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QGraphicsDropShadowEffect, QTextEdit, QMessageBox, QScrollArea, QVBoxLayout, QTextBrowser, QStackedLayout
 )
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, pyqtProperty, pyqtSignal
 from PyQt6.QtGui import QPixmap, QFont, QPainter, QColor, QPainterPath, QFontDatabase
@@ -13,6 +10,12 @@ import voice_to_json
 from pathlib import Path
 from openai import OpenAI
 import pygame  # 用于播放音频
+import numpy as np # Import numpy for matrix operations
+# ROS2 imports
+import rclpy
+from rclpy.node import Node
+from threading import Thread
+from c8nav.msg import Nav2Status
 
 # 初始化OpenAI客户端
 client = OpenAI()
@@ -52,41 +55,7 @@ print("=== 程序开始运行 ===")
 app = None
 window = None
 
-# 信号处理函数，用于优雅地关闭程序
-def signal_handler(signum, frame):
-    print("\n正在关闭程序...")
-    try:
-        # 停止所有音频播放
-        pygame.mixer.music.stop()
-        pygame.mixer.quit()
-        
-        # 关闭 ROS 节点
-        if rospy.is_initialized():
-            print("正在关闭 ROS 节点...")
-            rospy.signal_shutdown("User requested shutdown")
-            print("ROS 节点已关闭")
-        
-        # 关闭 Qt 应用程序
-        if app:
-            print("正在关闭 Qt 应用程序...")
-            app.quit()
-            print("Qt 应用程序已关闭")
-        
-        # 清理其他资源
-        if window and hasattr(window, 'status_widget'):
-            print("正在清理状态组件...")
-            window.status_widget.dot_timer.stop()
-            window.status_widget.anim_timer.stop()
-            print("状态组件已清理")
-        
-        print("程序已完全关闭")
-    except Exception as e:
-        print(f"关闭过程中出错: {str(e)}")
-    finally:
-        sys.exit(0)
 
-# 注册信号处理器
-signal.signal(signal.SIGINT, signal_handler)
 
 # 定义UI常量
 BG_COLOR = "#F7F7F7"  # 背景颜色
@@ -342,7 +311,8 @@ class RobotStatusWidget(QWidget):
         self.setStyleSheet("background: transparent;")
         
         # 初始化ROS订阅者，用于接收机器人状态更新
-        self.status_subscriber = rospy.Subscriber("/robot_status", String, self.status_callback)
+        # Commenting out ROS1 subscriber
+        # self.status_subscriber = rospy.Subscriber("/robot_status", String, self.status_callback)
 
     def status_callback(self, msg):
         try:
@@ -357,7 +327,8 @@ class RobotStatusWidget(QWidget):
                 self.deliver_run_state = False
                 self.update()
         except Exception as e:
-            rospy.logerr(f"Error processing status message: {str(e)}")
+            # Replace rospy.logerr with print
+            print(f"Error processing status message: {str(e)}")
 
     def next_status(self):
         # 不再需要自动切换状态，由ROS消息控制
@@ -433,6 +404,136 @@ class RobotStatusWidget(QWidget):
                 turtle_pix = turtle_pix.scaled(58, 58, Qt.AspectRatioMode.KeepAspectRatio)
                 painter.drawPixmap(672, anim_y, turtle_pix)
 
+# New Map Widget Class
+class MapWidget(QWidget):
+    update_robot_signal = pyqtSignal(int, int)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(1000, 740) # Use the size set in MainWindow
+        self.setStyleSheet("background: transparent;")
+        self.update_robot_signal.connect(self.update_robot_position)
+
+        # 右侧框内居中放置farm.png，不做任何缩放
+        map_label = QLabel(self)
+        map_pix = QPixmap("assets/farm.jpg")
+        print("farm.png isNull:", map_pix.isNull())
+        if not map_pix.isNull():
+            map_label.setPixmap(map_pix)
+            # The map image size is 766x630. Adjust its size to fit the new widget size proportionally if needed.
+            # For now, let's keep it centered but within the new 1000x740 boundaries.
+            map_label.resize(map_pix.width(), map_pix.height())
+            # Adjust position based on the new widget size (1000x740) to keep it centered.
+            # The original image was 766x630, new container is 1000x740
+            # Center X: (1000 - 766) // 2 = 117
+            # Center Y: (740 - 630) // 2 = 55
+            # Original offset: +20, +65
+            # New position: 117 + 20 = 137, 55 + 65 = 120
+            map_label.move(137, 120)
+        else:
+            map_label.setText("图片未找到")
+            map_label.move((1000 - 100) // 2, (740 - 30) // 2)
+
+        # 右侧白框顶部居中显示标题
+        title_label = QLabel("GIX Community Farm", self)
+        # Use the pixel font defined in MainWindow
+        title_font = QFont(MainWindow.PIXEL_FONT_FAMILY, 18)
+        title_label.setFont(title_font)
+        # 设置行高和字间距（部分属性QLabel不支持，但letter-spacing可用px近似）
+        title_label.setStyleSheet("color: #111; letter-spacing: -0.54px; line-height: 20px;")
+        title_label.adjustSize()
+        # 居中放置，距离顶部30px
+        # Center X based on new widget size: (1000 - title_label.width()) // 2
+        title_label.move((1000 - title_label.width()) // 2, 30 + 30)
+
+        # Calculate the transformation matrix (Actual -> Pixel)
+        # 直接用线性系数
+        self.x_coef = 20.7432
+        self.x_bias = 437.4537
+        self.y_coef = -23.8226
+        self.y_bias = 639.2829
+
+        # Add robot image
+        self.robot_label = QLabel(self)
+        robot_pixmap = QPixmap("/home/yuzhez23@netid.washington.edu/Robotics_finalUI/assets/turtle1.png")
+        if not robot_pixmap.isNull():
+            # Scale the robot image if needed, e.g., to 30x30
+            scaled_robot_pixmap = robot_pixmap.scaled(30, 30, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.robot_label.setPixmap(scaled_robot_pixmap)
+            self.robot_label.resize(scaled_robot_pixmap.size())
+            # Set initial position (example coordinates)
+            self.update_robot_position(400, 400) # Example pixel coordinates
+            self.robot_label.adjustSize()
+        else:
+            self.robot_label.setText("Robot image not found")
+            self.robot_label.adjustSize()
+
+        # Add input fields and button for manual position update (using real coordinates now)
+        self.x_input = QTextEdit(self)
+        self.x_input.setFixedSize(60, 30)
+        # Position below the title, adjusted for the new larger map widget size
+        self.x_input.move(10, 100) # Adjusted position
+        self.x_input.setPlaceholderText("Real X") # Indicate real coordinate input
+        self.x_input.setText("1.961") # Set initial real X value (example: pick_up x)
+
+        self.y_input = QTextEdit(self)
+        self.y_input.setFixedSize(60, 30)
+        # Position next to x_input, below the title
+        self.y_input.move(80, 100) # Adjusted position
+        self.y_input.setPlaceholderText("Real Y") # Indicate real coordinate input
+        self.y_input.setText("-0.349") # Set initial real Y value (example: pick_up y)
+
+        self.update_button = QPushButton("Update Robot Position", self) # Changed button text
+        # Position next to y_input, below the title
+        self.update_button.move(150, 100) # Adjusted position
+        self.update_button.clicked.connect(self.update_position_button_clicked)
+
+        # Update initial robot position using an example real coordinate
+        example_real_pos = np.array([1.961, -0.349]) # Example: pick_up real coordinate
+        pixel_x = self.x_coef * example_real_pos[0] + self.x_bias
+        pixel_y = self.y_coef * example_real_pos[1] + self.y_bias
+        self.update_robot_position(int(pixel_x), int(pixel_y))
+        print(f"Initial robot pixel position calculated from real ({example_real_pos[0]}, {example_real_pos[1]}): ({int(pixel_x)}, {int(pixel_y)})")
+
+        # Enable mouse tracking to get click coordinates
+        self.setMouseTracking(True)
+
+    def update_robot_position(self, x, y):
+        """Updates the robot's position on the map based on pixel coordinates."""
+        # Adjust position to account for the center of the robot image if needed
+        # self.robot_label.move(x - self.robot_label.width() // 2, y - self.robot_label.height() // 2)
+        self.robot_label.move(x, y)
+
+    def update_position_button_clicked(self):
+        """Reads real coordinates from input fields, calculates pixel coordinates, and updates robot position."""
+        try:
+            # Read real coordinates as floats
+            real_x = float(self.x_input.toPlainText())
+            real_y = float(self.y_input.toPlainText())
+            
+            # 直接用线性系数计算像素坐标
+            pixel_x = self.x_coef * real_x + self.x_bias
+            pixel_y = self.y_coef * real_y + self.y_bias
+
+            # Update the robot's position on the map using the calculated pixel coordinates
+            self.update_robot_position(int(pixel_x), int(pixel_y))
+            print(f"Updated robot pixel position to: ({int(pixel_x)}, {int(pixel_y)}) from real ({real_x}, {real_y})")
+        except ValueError:
+            print("Invalid input. Please enter numerical values for real x and y.")
+        except Exception as e:
+            print(f"Error calculating or updating position: {str(e)}")
+
+    def mousePressEvent(self, event):
+        """Handles mouse clicks on the map to get pixel coordinates."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Get the pixel coordinates of the click relative to the widget
+            pixel_x = event.position().x()
+            pixel_y = event.position().y()
+            print(f"Clicked map at pixel coordinates: ({pixel_x:.2f}, {pixel_y:.2f})")
+
+    def invoke_in_main_thread(self, func):
+        # Helper to safely call a function in the Qt main thread
+        QTimer.singleShot(0, func)
+
 # 主窗口类 - 应用程序的主要界面
 class MainWindow(QMainWindow):
     PIXEL_FONT_FAMILY = "Press Start 2P"  # 定义像素风格字体
@@ -440,38 +541,38 @@ class MainWindow(QMainWindow):
         super().__init__()
         print("=== 初始化 MainWindow ===")
         try:
-            # 初始化ROS节点
-            print("正在初始化 ROS 节点...")
-            rospy.init_node('robot_control_interface', anonymous=True)
-            print("ROS 节点初始化成功")
+            # Initialize ROS2 node instead
+            print("Initializing ROS2 node...")
+            # ROS2 node initialization will go here later
+            print("ROS2 node initialized (placeholder)")
             
             # 设置窗口基本属性
             self.setWindowTitle("Robot Control Interface")
-            self.setFixedSize(1280, 750)
+            # Increase window size
+            self.setFixedSize(1600, 900)
             self.setStyleSheet(f"background: {BG_COLOR};")
             
-            # 初始化ROS服务客户端
-            print("正在等待 ROS 服务...")
-            rospy.wait_for_service("/send_string")
-            self.string_service = rospy.ServiceProxy("/send_string", StringService)
-            print("ROS 服务连接成功")
+            # Initialize ROS2 service client instead
+            print("Waiting for ROS2 service...")
+            # ROS2 service client creation will go here later
+            print("ROS2 service connected (placeholder)")
             
             self.setup_ui()
             print("UI 设置完成")
         except Exception as e:
-            print(f"初始化过程中出错: {str(e)}")
+            print(f"Initialization error: {str(e)}")
             raise e
 
     def setup_ui(self):
         print("=== 开始设置 UI ===")
         try:
-            # 左侧对话区
-            self.left_card = CardWidget(60, 60, 373, 630, self)
+            # 左侧对话区 - Adjust size and position
+            self.left_card = CardWidget(80, 80, 450, 740, self) # Increased size and adjusted position
             print("左侧卡片创建成功")
             
-            # 聊天内容区
+            # 聊天内容区 - Adjust size
             self.scroll_area = QScrollArea(self.left_card)
-            self.scroll_area.setGeometry(0, 0, 373, 630-100)
+            self.scroll_area.setGeometry(0, 0, 450, 740-100) # Adjusted size
             self.scroll_area.setWidgetResizable(True)
             self.scroll_area.setStyleSheet("background:transparent; border:none;")
             print("滚动区域创建成功")
@@ -488,20 +589,69 @@ class MainWindow(QMainWindow):
             self.add_bot_message("Hi, How can I help you today?")
             print("初始消息添加成功")
             
-            # 底部语音按钮
+            # 底部语音按钮 - Adjust horizontal position to center
             self.voice_btn = VoiceButtonWidget(self.left_card)
-            self.voice_btn.move((373-385)//2, 630-80-8)
+            self.voice_btn.move((450-385)//2, 740-80-8) # Adjusted horizontal position and vertical based on new card height
             self.voice_btn.resultReady.connect(self.on_voice_result)
             print("语音按钮创建成功")
             
-            # 右侧状态区
-            self.right_card = CardWidget(1280-60-766, 60, 766, 630, self)
-            self.status_widget = RobotStatusWidget(self.right_card)
-            self.status_widget.move(0, 0)
+            # 右侧状态和地图区容器 - Adjust size and position
+            self.right_card = CardWidget(1600-80-1000, 80, 1000, 740, self) # Increased size and adjusted position
+            print("右侧卡片创建成功")
+
+            # Create a container widget for the stacked layout - Adjust size
+            self.right_view_container = QWidget(self.right_card)
+            self.right_view_container.setGeometry(0, 0, 1000, 740) # Adjusted size
+
+            # Create the stacked layout and widgets
+            self.right_stacked_layout = QStackedLayout(self.right_view_container)
+
+            # Status and Map widgets need to be resized or designed to fit the new container size (1000x740)
+            # For now, just pass the container as parent, they might need internal adjustments.
+            self.status_widget = RobotStatusWidget(self.right_view_container)
+            self.map_widget = MapWidget(self.right_view_container)
+
+            # Ensure status_widget and map_widget adapt to the new size of right_view_container
+            self.status_widget.setFixedSize(1000, 740) # Set fixed size to match container
+            self.map_widget.setFixedSize(1000, 740)     # Set fixed size to match container
+
+            self.right_stacked_layout.addWidget(self.status_widget)
+            self.right_stacked_layout.addWidget(self.map_widget)
+
+            # Set initial view (e.g., status view)
+            self.right_stacked_layout.setCurrentIndex(0) # 0 for status, 1 for map
             print("右侧状态区域创建成功")
+
+            # Add buttons to switch views - Adjust vertical position
+            self.status_button = QPushButton("Show Status", self.right_card)
+            self.map_button = QPushButton("Show Map", self.right_card)
+
+            # Position the buttons (adjust y position as needed)
+            button_y = 10 # Example vertical position
+            self.status_button.move(10, button_y)
+            self.map_button.move(120, button_y)
+
+            # Connect button signals to slots
+            self.status_button.clicked.connect(self.show_status_view)
+            self.map_button.clicked.connect(self.show_map_view)
+            print("View switching buttons created and connected")
+
+            # 启动ROS2监听线程
+            self.start_ros2_nav_listener()
+
         except Exception as e:
-            print(f"UI 设置过程中出错: {str(e)}")
+            print(f"UI Setup error: {str(e)}")
             raise e
+
+    # Slot to show the status view
+    def show_status_view(self):
+        self.right_stacked_layout.setCurrentIndex(0)
+        print("Switched to status view")
+
+    # Slot to show the map view
+    def show_map_view(self):
+        self.right_stacked_layout.setCurrentIndex(1)
+        print("Switched to map view")
 
     # 添加用户消息到聊天区
     def add_user_message(self, text):
@@ -530,22 +680,26 @@ class MainWindow(QMainWindow):
 
     # 处理语音识别结果
     def on_voice_result(self, transcript, json_result):
-        print(f"=== 收到语音结果 ===")
-        print(f"转录文本: {transcript}")
-        print(f"JSON结果: {json_result}")
+        print(f"=== Received voice result ===")
+        print(f"Transcript: {transcript}")
+        print(f"JSON result: {json_result}")
         
         # 添加用户消息
         self.add_user_message(transcript)
         
         # 发送服务请求
         try:
-            print("正在发送服务请求...")
-            response = self.string_service(json_result)
-            print(f"服务响应: {response.result}")
-            rospy.loginfo(f"Service Response: {response.result}")
+            print("Sending service request...")
+            # Call ROS2 service instead
+            # response = self.string_service(json_result)
+            response = type("Response", (object,), {"result": "ROS2 service placeholder response"})()
+            print(f"Service response: {response.result}")
+            # Replace rospy.loginfo with print
+            print(f"Service Response: {response.result}")
         except Exception as e:
-            print(f"服务调用失败: {str(e)}")
-            rospy.logerr(f"Service call failed: {str(e)}")
+            print(f"Service call failed: {str(e)}")
+            # Replace rospy.logerr with print
+            print(f"Service call failed: {str(e)}")
         
         # 生成自然语言回复
         print(f"正在生成回复...")
@@ -592,6 +746,44 @@ class MainWindow(QMainWindow):
                 return "Sorry, I could not understand your command."
             return str(data)
 
+    def start_ros2_nav_listener(self):
+        def ros2_spin():
+            rclpy.init()
+            node = ROS2NavListener(self.map_widget)
+            rclpy.spin(node)
+            node.destroy_node()
+            rclpy.shutdown()
+        Thread(target=ros2_spin, daemon=True).start()
+
+# 信号处理函数，用于优雅地关闭程序
+def signal_handler(signum, frame):
+    print("\nReceived Ctrl+C, shutting down...")
+    try:
+        # 停止所有音频播放
+        pygame.mixer.music.stop()
+        pygame.mixer.quit()
+        
+        # remove close ROS node block
+        
+        # 关闭 Qt 应用程序
+        if app:
+            print("Quitting Qt application...")
+            app.quit()
+            print("Qt application quit signal sent.")
+        
+        # 清理其他资源
+        if window and hasattr(window, 'status_widget'):
+            print("Cleanup complete.")
+            window.status_widget.dot_timer.stop()
+            window.status_widget.anim_timer.stop()
+            print("状态组件已清理")
+        
+        print("程序已完全关闭")
+    except Exception as e:
+        print(f"Error during shutdown: {str(e)}")
+    finally:
+        sys.exit(0)
+
 # 主函数
 def main():
     global app, window
@@ -628,6 +820,27 @@ def main():
     except Exception as e:
         print(f"主函数执行出错: {str(e)}")
         raise e
+
+class ROS2NavListener(Node):
+    def __init__(self, map_widget):
+        super().__init__('nav2_status_listener')
+        self.map_widget = map_widget
+        self.subscription = self.create_subscription(
+            Nav2Status,
+            'nav2_status',
+            self.listener_callback,
+            10
+        )
+        print('[ROS2NavListener] Successfully subscribed to nav2_status topic.')
+
+    def listener_callback(self, msg):
+        real_x = msg.position.x
+        real_y = msg.position.y
+        print(f'[ROS2NavListener] Received real position: ({real_x}, {real_y})')
+        pixel_x = self.map_widget.x_coef * real_x + self.map_widget.x_bias
+        pixel_y = self.map_widget.y_coef * real_y + self.map_widget.y_bias
+        print(f'[ROS2NavListener] Calculated pixel position: ({int(pixel_x)}, {int(pixel_y)})')
+        self.map_widget.update_robot_signal.emit(int(pixel_x), int(pixel_y))
 
 if __name__ == '__main__':
     main()
