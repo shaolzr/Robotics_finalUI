@@ -553,6 +553,7 @@ class MainWindow(QMainWindow):
         "Minnie's Bontique": "elevator",
         "Pluto's Den": "wall"
     }
+    PERCEPTION_TIMEOUT = 3.0  # seconds
     def __init__(self):
         super().__init__()
         print("=== 初始化 MainWindow ===")
@@ -561,6 +562,11 @@ class MainWindow(QMainWindow):
         self.latest_manip_status = None  # 新增：维护最新机械臂状态
         self.task_id = 0
         self.available_objects = ["apple", "banana", "orange"]
+        # 感知物体相关
+        self._detected_object_times = {}  # {object_name: last_update_time}
+        self.perception_timer = QTimer(self)
+        self.perception_timer.timeout.connect(self._cleanup_detected_objects)
+        self.perception_timer.start(1000)  # 每秒检查一次
         try:
             # Initialize ROS2 node instead
             print("Initializing ROS2 node...")
@@ -812,6 +818,24 @@ class MainWindow(QMainWindow):
                 return alias
         return internal_name  # fallback to code if no alias
 
+    def update_detected_object(self, object_name):
+        import time
+        now = time.time()
+        self._detected_object_times[object_name] = now
+        print(f'[Perception] Current objects: {self.detected_object_set}')
+
+    def _cleanup_detected_objects(self):
+        import time
+        now = time.time()
+        to_remove = [obj for obj, t in self._detected_object_times.items() if now - t > self.PERCEPTION_TIMEOUT]
+        for obj in to_remove:
+            del self._detected_object_times[obj]
+
+    @property
+    def detected_object_set(self):
+        # 只保留3秒内有效的唯一物体名
+        return set(self._detected_object_times.keys())
+
 # 信号处理函数，用于优雅地关闭程序
 def signal_handler(signum, frame):
     print("\nReceived Ctrl+C, shutting down...")
@@ -860,6 +884,7 @@ def main():
         manipulation_node = ManipulationStatusListener(window.update_manipulation_status)
         window.command_publisher = CommandPublisher()
         object_list_node = ObjectListListener(window.update_available_objects)
+        perception_node = PerceptionListener(window.update_detected_object)
 
         # 创建 executor 并添加所有 node
         executor = MultiThreadedExecutor()
@@ -867,6 +892,7 @@ def main():
         executor.add_node(manipulation_node)
         executor.add_node(window.command_publisher)
         executor.add_node(object_list_node)
+        executor.add_node(perception_node)
 
         # 启动 ROS2 executor 在后台线程
         from threading import Thread
@@ -958,6 +984,24 @@ class ManipulationStatusListener(Node):
         print(f'[ManipulationStatusListener] [{ts}] status = {status}')
         self.last_status = status
         self.update_status_callback(status)
+
+class PerceptionListener(Node):
+    def __init__(self, update_callback):
+        super().__init__('perception_listener')
+        from trans_msg.msg import FinalDetection
+        self.subscription = self.create_subscription(
+            FinalDetection,
+            'perception_topic',  # TODO: 替换为实际topic名
+            self.listener_callback,
+            10
+        )
+        self.update_callback = update_callback
+        print('[PerceptionListener] Subscribed to perception_topic')
+
+    def listener_callback(self, msg):
+        object_name = msg.object_name
+        print(f'[PerceptionListener] Detected object: {object_name}')
+        self.update_callback(object_name)
 
 if __name__ == '__main__':
     main()
