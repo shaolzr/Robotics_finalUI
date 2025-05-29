@@ -92,6 +92,7 @@ For status queries, use this format:
   "type": "query",
   "answer": "<your answer in English>"
 }
+Quesitons inlude asking distance, ETA, available objects, etc. Use the context I give to you in the begining.
 If the command cannot be parsed into the command format (missing object or destination), return:
 {
   "type": "error",

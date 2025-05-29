@@ -711,6 +711,9 @@ class MainWindow(QMainWindow):
             context += f"Navigation status: position=({nav.position.x:.2f}, {nav.position.y:.2f}), distance_to_goal={nav.distance_to_goal:.2f} meters , eta={eta:.2f} seconds\n"
         if manip:
             context += f"Manipulation status: {manip}\n"
+        # Add perception context
+        if self.detected_object_set:
+            context += f"Available ojects: {list(self.detected_object_set)}\n"
         # 让 voice_to_json 直接调用 LLM，带 context
         structured_json = voice_to_json.parse_command_with_llm(transcript, context=context)
         print(f"structured_json: {structured_json}")
@@ -988,10 +991,10 @@ class ManipulationStatusListener(Node):
 class PerceptionListener(Node):
     def __init__(self, update_callback):
         super().__init__('perception_listener')
-        from trans_msg.msg import FinalDetection
+        from trans_msgs.msg import FinalDetection
         self.subscription = self.create_subscription(
             FinalDetection,
-            'perception_topic',  # TODO: 替换为实际topic名
+            'perception',  # TODO: 替换为实际topic名
             self.listener_callback,
             10
         )
@@ -999,6 +1002,7 @@ class PerceptionListener(Node):
         print('[PerceptionListener] Subscribed to perception_topic')
 
     def listener_callback(self, msg):
+        print("received")
         object_name = msg.object_name
         print(f'[PerceptionListener] Detected object: {object_name}')
         self.update_callback(object_name)
