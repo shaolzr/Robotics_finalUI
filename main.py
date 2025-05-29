@@ -16,6 +16,8 @@ import rclpy
 from rclpy.node import Node
 from threading import Thread
 from c8nav.msg import Nav2Status
+from std_msgs.msg import String
+import json
 
 # 初始化OpenAI客户端
 client = OpenAI()
@@ -692,24 +694,16 @@ class MainWindow(QMainWindow):
         # 添加用户消息
         self.add_user_message(transcript)
         
-        # 发送服务请求
-        try:
-            print("Sending service request...")
-            # Call ROS2 service instead
-            # response = self.string_service(json_result)
-            response = type("Response", (object,), {"result": "ROS2 service placeholder response"})()
-            print(f"Service response: {response.result}")
-            # Replace rospy.loginfo with print
-            print(f"Service Response: {response.result}")
-        except Exception as e:
-            print(f"Service call failed: {str(e)}")
-            # Replace rospy.logerr with print
-            print(f"Service call failed: {str(e)}")
+        # 验证命令
+        is_valid, result = self.validate_command(json_result)
         
-        # 生成自然语言回复
-        print(f"正在生成回复...")
-        bot_reply = self.generate_bot_reply(response.result)
-        print(f"生成的回复: {bot_reply}")
+        if is_valid:
+            # 发布命令
+            self.command_publisher.publish_command(result["object"], result["destination"])
+            bot_reply = f"I will fetch {result['object']} and deliver it to the {result['destination']}."
+        else:
+            bot_reply = f"Error: {result}"
+        
         self.add_bot_message(bot_reply, json_data=json_result)
 
     # 生成机器人回复
@@ -759,6 +753,48 @@ class MainWindow(QMainWindow):
             node.destroy_node()
             rclpy.shutdown()
         Thread(target=ros2_spin, daemon=True).start()
+
+    # 初始化对象列表和命令发布者
+    def start_ros2_objects_listener(self):
+        def ros2_spin():
+            rclpy.init()
+            self.command_publisher = CommandPublisher()
+            node = ObjectListListener(self.update_available_objects)
+            rclpy.spin(node)
+            node.destroy_node()
+            rclpy.shutdown()
+        Thread(target=ros2_spin, daemon=True).start()
+
+    def update_available_objects(self, objects):
+        self.available_objects = objects
+        print(f'[MainWindow] Updated available objects: {objects}')
+
+    def validate_command(self, command_json):
+        try:
+            command = json.loads(command_json)
+            
+            # 检查是否有错误
+            if "error" in command:
+                return False, command["error"]
+            
+            # 检查必要字段
+            if "object" not in command or "destination" not in command:
+                return False, "Missing required fields: object and destination"
+            
+            # 验证目的地
+            valid_destinations = ["sofa", "sink", "elevator", "lab", "wall"]
+            if command["destination"] not in valid_destinations:
+                return False, f"Invalid destination. Must be one of: {valid_destinations}"
+            
+            # 验证对象是否在可用列表中
+            if command["object"] not in self.available_objects:
+                return False, f"Object '{command['object']}' is not available"
+            
+            return True, command
+        except json.JSONDecodeError:
+            return False, "Invalid JSON format"
+        except Exception as e:
+            return False, str(e)
 
 # 信号处理函数，用于优雅地关闭程序
 def signal_handler(signum, frame):
@@ -846,6 +882,40 @@ class ROS2NavListener(Node):
         pixel_y = self.map_widget.y_coef * real_y + self.map_widget.y_bias
         print(f'[ROS2NavListener] Calculated pixel position: ({int(pixel_x)}, {int(pixel_y)})')
         self.map_widget.update_robot_signal.emit(int(pixel_x), int(pixel_y))
+
+class ObjectListListener(Node):
+    def __init__(self, callback):
+        super().__init__('object_list_listener')
+        self.callback = callback
+        # 暂时注释掉订阅，等待确认正确的消息类型
+        # self.subscription = self.create_subscription(
+        #     ObjectList,
+        #     'object_list',
+        #     self.listener_callback,
+        #     10
+        # )
+        print('[ObjectListListener] Waiting for object_list message type confirmation.')
+
+class CommandPublisher(Node):
+    def __init__(self):
+        super().__init__('command_publisher')
+        self.publisher = self.create_publisher(
+            String,  # 使用标准消息类型
+            'robot_command',
+            10
+        )
+        print('[CommandPublisher] Successfully created command publisher.')
+
+    def publish_command(self, object_name, destination):
+        msg = String()
+        # 将命令信息序列化为 JSON 字符串
+        command_data = {
+            "object": object_name,
+            "destination": destination
+        }
+        msg.data = json.dumps(command_data)
+        self.publisher.publish(msg)
+        print(f'[CommandPublisher] Published command: fetch {object_name} to {destination}')
 
 if __name__ == '__main__':
     main()

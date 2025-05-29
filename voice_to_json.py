@@ -81,22 +81,21 @@ You are an AI agent interface. Convert the user's natural language command into 
 
 Your output must only contain the JSON object, and should not include any explanation or extra text.
 
-Use the following format:
+The command must contain both an object to fetch and a destination to deliver it to.
 
+Use the following format:
 {
-  "intent": "fetch_item",
-  "location": "Jack's office",
-  "object": "a laptop",
-  "destination": "sofa",
-  "time": "now",
-  "priority": "high"
+  "object": "object_name",  // The item to be fetched
+  "destination": "destination_name"  // Must be one of: "sofa", "sink", "elevator", "lab", "wall"
+}
+
+If the command cannot be parsed into this format (missing object or destination), return:
+{
+  "error": "Invalid command format. Please specify both an object to fetch and a destination."
 }
 
 end of JSON format.
-
-Before concluding the text is not a valid command, double-check it carefully. If you are certain, then return your judgement along with the reasoning.
 """
-# If the text is not like a command to robots, return "This input seems not to be a clear instruction. Please try again."
     response = client.chat.completions.create(
         model="gpt-4",
         messages=[
