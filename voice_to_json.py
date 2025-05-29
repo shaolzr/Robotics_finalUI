@@ -77,20 +77,28 @@ def transcribe_audio(file_path):
 # ==== LLM parse ====
 def parse_command_with_llm(transcript_text):
     system_prompt = """
-You are an AI agent interface. Convert the user's natural language command into a structured JSON format for downstream robotic execution.
+You are an AI agent interface. Analyze the user's input and determine if it's a command to execute a task or a status query.
 
-Your output must only contain the JSON object, and should not include any explanation or extra text.
+If it's a command to execute a task, convert it into a structured JSON format for downstream robotic execution.
+If it's a status query, return a JSON object indicating it's a query and what type of information is being requested.
 
-The command must contain both an object to fetch and a destination to deliver it to.
-
-Use the following format:
+For commands, use this format:
 {
+  "type": "command",
   "object": "object_name",  // The item to be fetched
   "destination": "destination_name"  // Must be one of: "sofa", "sink", "elevator", "lab", "wall"
 }
 
-If the command cannot be parsed into this format (missing object or destination), return:
+For status queries, use this format:
 {
+  "type": "query",
+  "query_type": "position|time|status|task",  // What information is being requested
+  "context": "additional context about the query"  // Optional additional context
+}
+
+If the command cannot be parsed into the command format (missing object or destination), return:
+{
+  "type": "error",
   "error": "Invalid command format. Please specify both an object to fetch and a destination."
 }
 
@@ -101,7 +109,8 @@ end of JSON format.
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": transcript_text}
-        ]
+        ],
+        response_format={ "type": "json_object" }
     )
     return response.choices[0].message.content
 

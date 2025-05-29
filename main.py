@@ -17,6 +17,7 @@ from rclpy.node import Node
 from threading import Thread
 from c8nav.msg import Nav2Status
 from std_msgs.msg import String
+from yolo_msgs.msg import DetectionArray  # 修改为正确的消息类型
 import json
 import datetime
 from rclpy.executors import MultiThreadedExecutor
@@ -552,6 +553,18 @@ class MainWindow(QMainWindow):
         self.manipulation_status = None
         self.task_id = 0  # 新增：维护任务id
         self.available_objects = ["apple", "banana", "orange"]  # 新增：初始化可用对象列表，避免属性错误
+        # 新增：存储导航状态
+        self.nav_status = {
+            'position': {'x': 0.0, 'y': 0.0},
+            'distance_to_goal': 0.0,
+            'estimated_time_to_goal': 0.0
+        }
+        # 新增：存储当前任务信息
+        self.current_task = {
+            'object': None,
+            'destination': None,
+            'id': None
+        }
         try:
             # Initialize ROS2 node instead
             print("Initializing ROS2 node...")
@@ -696,17 +709,47 @@ class MainWindow(QMainWindow):
         # 添加用户消息
         self.add_user_message(transcript)
         
-        # 验证命令
-        is_valid, result = self.validate_command(json_result)
+        try:
+            # 解析JSON结果
+            result = json.loads(json_result)
+            
+            # 根据消息类型处理
+            if result.get('type') == 'command':
+                # 验证命令
+                is_valid, command_result = self.validate_command(json_result)
+                
+                if is_valid:
+                    # 更新当前任务信息
+                    self.current_task = {
+                        'object': command_result["object"],
+                        'destination': command_result["destination"],
+                        'id': command_result["id"]
+                    }
+                    # 发布命令
+                    self.command_publisher.publish_command(command_result["object"], command_result["destination"], command_result["id"])
+                    bot_reply = f"I will fetch {command_result['object']} and deliver it to the {command_result['destination']}."
+                else:
+                    bot_reply = f"Error: {command_result}"
+                
+                self.add_bot_message(bot_reply, json_data=json_result)
+            
+            elif result.get('type') == 'query':
+                # 处理状态查询
+                response = self.get_status_response(result['query_type'], result.get('context'))
+                self.add_bot_message(response)
+            
+            elif result.get('type') == 'error':
+                # 处理错误
+                self.add_bot_message(result['error'])
+            
+            else:
+                self.add_bot_message("I'm not sure how to process your request.")
         
-        if is_valid:
-            # 发布命令
-            self.command_publisher.publish_command(result["object"], result["destination"], result["id"])
-            bot_reply = f"I will fetch {result['object']} and deliver it to the {result['destination']}."
-        else:
-            bot_reply = f"Error: {result}"
-        
-        self.add_bot_message(bot_reply, json_data=json_result)
+        except json.JSONDecodeError:
+            self.add_bot_message("Sorry, I couldn't understand your request.")
+        except Exception as e:
+            print(f"Error processing voice result: {str(e)}")
+            self.add_bot_message("Sorry, an error occurred while processing your request.")
 
     # 生成机器人回复
     def generate_bot_reply(self, data):
@@ -785,6 +828,51 @@ class MainWindow(QMainWindow):
     def update_available_objects(self, objects):
         self.available_objects = objects
         print(f'[MainWindow] Updated available objects: {objects}')
+
+    def update_nav_status(self, position, distance, time):
+        """更新导航状态信息"""
+        self.nav_status['position'] = position
+        self.nav_status['distance_to_goal'] = distance
+        self.nav_status['estimated_time_to_goal'] = time
+        print(f'[MainWindow] Updated nav status: position={position}, distance={distance}, time={time}')
+
+    def get_status_response(self, query_type, context=None):
+        """根据查询类型返回相应的状态信息"""
+        if query_type == 'position':
+            return f"The robot is currently at position ({self.nav_status['position']['x']:.2f}, {self.nav_status['position']['y']:.2f})"
+        elif query_type == 'time':
+            if self.nav_status['estimated_time_to_goal'] > 0:
+                return f"Estimated time to reach the destination: {self.nav_status['estimated_time_to_goal']:.1f} seconds"
+            else:
+                return "The robot is not currently moving to any destination"
+        elif query_type == 'status':
+            if self.manipulation_status:
+                status_map = {
+                    "waiting_for_task": "The robot is waiting for a new task",
+                    "moving_to_target": "The robot is moving to pick up the object",
+                    "grasping": "The robot is trying to grasp the object",
+                    "moving_to_release": "The robot is moving to deliver the object",
+                    "releasing": "The robot is releasing the object",
+                    "move_to_target_failed": "Failed to reach the target object",
+                    "move_to_release_failed": "Failed to reach the delivery location",
+                    "grasping_failed": "Failed to grasp the object",
+                    "releasing_failed": "Failed to release the object",
+                    "object_dropped": "The object was dropped",
+                    "emergency_stop": "Emergency stop activated",
+                    "task_completed": "The task has been completed",
+                    "require_help": "The robot needs human assistance",
+                    "returning_home": "The robot is returning to its home position"
+                }
+                return status_map.get(self.manipulation_status, f"Current status: {self.manipulation_status}")
+            else:
+                return "No status information available"
+        elif query_type == 'task':
+            if self.current_task['object'] and self.current_task['destination']:
+                return f"Current task: Fetching {self.current_task['object']} and delivering it to the {self.current_task['destination']}"
+            else:
+                return "No active task"
+        else:
+            return "I'm not sure what information you're looking for"
 
 # 信号处理函数，用于优雅地关闭程序
 def signal_handler(signum, frame):
@@ -877,14 +965,19 @@ class ObjectListListener(Node):
     def __init__(self, callback):
         super().__init__('object_list_listener')
         self.callback = callback
-        # 暂时注释掉订阅，等待确认正确的消息类型
-        # self.subscription = self.create_subscription(
-        #     ObjectList,
-        #     'object_list',
-        #     self.listener_callback,
-        #     10
-        # )
-        print('[ObjectListListener] Waiting for object_list message type confirmation.')
+        self.subscription = self.create_subscription(
+            DetectionArray,
+            'object_list',
+            self.listener_callback,
+            10
+        )
+        print('[ObjectListListener] Successfully subscribed to object_list topic.')
+
+    def listener_callback(self, msg):
+        # 从DetectionArray消息中提取对象列表
+        objects = [detection.class_name for detection in msg.detections]
+        self.callback(objects)
+        print(f'[ObjectListListener] Received objects: {objects}')
 
 class CommandPublisher(Node):
     def __init__(self):
