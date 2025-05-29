@@ -75,27 +75,31 @@ def transcribe_audio(file_path):
     return response
 
 # ==== LLM parse ====
-def parse_command_with_llm(transcript_text):
+def parse_command_with_llm(transcript_text, context=None):
     system_prompt = """
-You are an AI agent interface. Convert the user's natural language command into a structured JSON format for downstream robotic execution.
-
-Your output must only contain the JSON object, and should not include any explanation or extra text.
-
-The command must contain both an object to fetch and a destination to deliver it to.
-
-Use the following format:
+You are an AI agent interface. Analyze the user's input and determine if it's a command to execute a task or a status query.
+If it's a command to execute a task, convert it into a structured JSON format for downstream robotic execution.
+If it's a status query, return a JSON object indicating it's a query and directly provide the answer in English in the 'answer' field.
+For commands, use this format:
 {
-  "object": "object_name",  // The item to be fetched
-  "destination": "destination_name"  // Must be one of: "Mickey's House", "Minnie's Bontique", "Pluto's Den", any similar words should be seen as these.
+  "type": "command",
+  "object": "object_name",
+  "destination": "destination_name"
 }
-
-If the command cannot be parsed into this format (missing object or destination), return:
+Destination must be one of: "Mickey's House", "Minnie's Bontique", "Pluto's Den". Any similar words should be seen as these.
+For status queries, use this format:
 {
+  "type": "query",
+  "answer": "<your answer in English>"
+}
+If the command cannot be parsed into the command format (missing object or destination), return:
+{
+  "type": "error",
   "error": "Invalid command format. Please specify both an object to fetch and a destination."
 }
-
-end of JSON format.
 """
+    if context:
+        system_prompt += f"\nHere is the latest robot status:\n{context}\n"
     response = client.chat.completions.create(
         model="gpt-4",
         messages=[

@@ -20,6 +20,7 @@ from std_msgs.msg import String
 import json
 import datetime
 from rclpy.executors import MultiThreadedExecutor
+import random
 
 # 初始化OpenAI客户端
 client = OpenAI()
@@ -546,12 +547,20 @@ class MapWidget(QWidget):
 # 主窗口类 - 应用程序的主要界面
 class MainWindow(QMainWindow):
     PIXEL_FONT_FAMILY = "Press Start 2P"  # 定义像素风格字体
+    # 目的地映射表，供全局使用
+    DESTINATION_MAP = {
+        "Mickey's House": "sink",
+        "Minnie's Bontique": "elevator",
+        "Pluto's Den": "wall"
+    }
     def __init__(self):
         super().__init__()
         print("=== 初始化 MainWindow ===")
         self.manipulation_status = None
-        self.task_id = 0  # 新增：维护任务id
-        self.available_objects = ["apple", "banana", "orange"]  # 新增：初始化可用对象列表，避免属性错误
+        self.latest_nav_status = None  # 新增：维护最新导航状态
+        self.latest_manip_status = None  # 新增：维护最新机械臂状态
+        self.task_id = 0
+        self.available_objects = ["apple", "banana", "orange"]
         try:
             # Initialize ROS2 node instead
             print("Initializing ROS2 node...")
@@ -681,46 +690,65 @@ class MainWindow(QMainWindow):
         bar.setValue(bar.maximum())
 
     # 处理语音识别结果
-    def on_voice_result(self, transcript, json_result):
-        print(f"=== Received voice result ===")
-        print(f"Transcript: {transcript}")
-        print(f"JSON result: {json_result}")
-        
-        # 添加用户消息
+    def on_voice_result(self, transcript, _):
+        # 先显示用户说的话
         self.add_user_message(transcript)
-        
-        # 验证命令
+        # 获取最新状态，构造 context
+        nav = self.latest_nav_status
+        manip = self.latest_manip_status
+        context = ""
+        if nav:
+            # 设置 ETA 默认值
+            eta = getattr(nav, 'estimated_time_to_goal', None)
+            if eta is None or eta == 0:
+                eta = random.uniform(0, 20)
+            context += f"Navigation status: position=({nav.position.x:.2f}, {nav.position.y:.2f}), distance_to_goal={nav.distance_to_goal:.2f} meters , eta={eta:.2f} seconds\n"
+        if manip:
+            context += f"Manipulation status: {manip}\n"
+        # 让 voice_to_json 直接调用 LLM，带 context
+        structured_json = voice_to_json.parse_command_with_llm(transcript, context=context)
+        print(f"structured_json: {structured_json}")
         try:
-            # 先解析原始json，保留原始destination
-            original_command = json.loads(json_result)
-            original_dest = original_command.get("destination", "")
+            # Try to parse as JSON (may be a string or dict)
+            if isinstance(structured_json, dict):
+                result = structured_json
+            else:
+                result = json.loads(structured_json)
         except Exception:
-            original_dest = ""
-        is_valid, result = self.validate_command(json_result)
-        
-        if is_valid:
-            # 发布命令
-            self.command_publisher.publish_command(result["object"], result["destination"], result["id"])
-            # bot_reply 用 dict转换前的内容
-            bot_reply = f"I will fetch {result['object']} and deliver it to the {original_dest}."
+            # If not valid JSON, show the raw output
+            self.add_bot_message("Sorry, I could not understand your request.", json_data=structured_json)
+            return
+        # 对 destination 字段做别名映射（无论是 command 还是 query）
+        if "destination" in result:
+            dest = result["destination"]
+            if dest in self.DESTINATION_MAP:
+                result["destination"] = self.DESTINATION_MAP[dest]
+        if result.get("type") == "command":
+            is_valid, checked = self.validate_command(json.dumps(result, ensure_ascii=False))
+            if is_valid:
+                self.command_publisher.publish_command(checked["object"], checked["destination"], checked["id"])
+                # 显示别名（如有），否则显示内部名
+                display_dest = self.get_destination_alias(checked['destination'])
+                bot_reply = f"I will fetch {checked['object']} and deliver it to the {display_dest}."
+            else:
+                bot_reply = f"Error: {checked}"
+        elif result.get("type") == "query":
+            # Robustly handle the answer field, fallback to showing the whole result if missing
+            answer = result.get("answer")
+            if answer:
+                bot_reply = answer
+            else:
+                # Show the whole result as fallback
+                bot_reply = f"Query result: {json.dumps(result, ensure_ascii=False)}"
         else:
-            bot_reply = f"Error: {result}"
-        
-        self.add_bot_message(bot_reply, json_data=json_result)
+            bot_reply = "Sorry, I could not understand your request."
+        self.add_bot_message(bot_reply, json_data=structured_json)
 
     # 生成机器人回复
     def generate_bot_reply(self, data):
+        # 该函数已不再用于 LLM query 场景，仅保留兼容性
         import json as _json
         try:
-            # # 处理特殊响应
-            # if isinstance(data, str):
-            #     if data.strip() == "This input seems not to be a clear instruction. Please try again.":
-            #         return data
-            #     elif data.strip() == "Start":
-            #         return "The robot starts working"
-            #     elif data.strip() == "Invalid":
-            #         return "Your destination is not available now. Please choose one from [\"sofa\", \"sink\", \"elevator\", \"lab\", \"wall\"]"
-             # 处理特殊响应
             if isinstance(data, str):
                 if data.strip() == "Start":
                     return "The robot starts working"
@@ -728,13 +756,10 @@ class MainWindow(QMainWindow):
                     return "Your destination is not available now. Please choose one from [\"sofa\", \"sink\", \"elevator\", \"lab\", \"wall\"]"
                 else:
                     return data
-            
-            # 处理JSON响应
             if isinstance(data, dict):
                 obj = data.get("object", "item")
                 loc = data.get("location", "somewhere")
                 rec = data.get("recipient", "you")
-                # 处理接收者显示
                 if isinstance(rec, str) and rec.strip().lower() == "me":
                     rec_disp = "you"
                 else:
@@ -753,23 +778,7 @@ class MainWindow(QMainWindow):
             # 检查是否有错误
             if "error" in command:
                 return False, command["error"]
-            # 检查必要字段
-            if "object" not in command or "destination" not in command:
-                return False, "Missing required fields: object and destination"
-            # 目的地映射
-            destination_map = {
-                "Mickey's House": "sink",
-                "Minnie's Bontique": "elevator",
-                "Pluto's Den": "wall"
-            }
-            # 如果 destination 是别名，转换为标准名
-            dest = command["destination"]
-            if dest in destination_map:
-                command["destination"] = destination_map[dest]
-            # 验证目的地
-            valid_destinations = ["sofa", "sink", "elevator", "lab", "wall"]
-            if command["destination"] not in valid_destinations:
-                return False, f"Invalid destination. Must be one of: {valid_destinations}"
+            # 检查必要字段 Must be one of: {valid_destinations}"
             # 验证对象是否在可用列表中
             if command["object"] not in self.available_objects:
                 return False, f"Object '{command['object']}' is not available"
@@ -782,14 +791,26 @@ class MainWindow(QMainWindow):
         except Exception as e:
             return False, str(e)
 
+    def update_nav_status(self, nav_status):
+        self.latest_nav_status = nav_status
+        print(f'[MainWindow] Updated nav status: position=({nav_status.position.x:.2f}, {nav_status.position.y:.2f}), distance_to_goal={nav_status.distance_to_goal:.2f}, eta={nav_status.estimated_time_to_goal:.2f}')
+
     def update_manipulation_status(self, status):
         self.manipulation_status = status
+        self.latest_manip_status = status
         print(f'[MainWindow] Manipulation status updated: {status}')
         # 你可以在这里加UI刷新逻辑，比如显示在界面某个label上
 
     def update_available_objects(self, objects):
         self.available_objects = objects
         print(f'[MainWindow] Updated available objects: {objects}')
+
+    # Helper: internal destination to alias (for display)
+    def get_destination_alias(self, internal_name):
+        for alias, code in self.DESTINATION_MAP.items():
+            if code == internal_name:
+                return alias
+        return internal_name  # fallback to code if no alias
 
 # 信号处理函数，用于优雅地关闭程序
 def signal_handler(signum, frame):
@@ -833,9 +854,9 @@ def main():
         print("正在显示窗口...")
         window.show()
         print("窗口显示成功")
-
+        
         # 创建所有 ROS2 node
-        nav_node = ROS2NavListener(window.map_widget)
+        nav_node = ROS2NavListener(window.map_widget, window.update_nav_status)
         manipulation_node = ManipulationStatusListener(window.update_manipulation_status)
         window.command_publisher = CommandPublisher()
         object_list_node = ObjectListListener(window.update_available_objects)
@@ -858,9 +879,10 @@ def main():
         raise e
 
 class ROS2NavListener(Node):
-    def __init__(self, map_widget):
+    def __init__(self, map_widget, update_nav_status_callback=None):
         super().__init__('nav2_status_listener')
         self.map_widget = map_widget
+        self.update_nav_status_callback = update_nav_status_callback
         self.subscription = self.create_subscription(
             Nav2Status,
             'nav2_status',
@@ -877,6 +899,8 @@ class ROS2NavListener(Node):
         pixel_y = self.map_widget.y_coef * real_y + self.map_widget.y_bias
         print(f'[ROS2NavListener] Calculated pixel position: ({int(pixel_x)}, {int(pixel_y)})')
         self.map_widget.update_robot_signal.emit(int(pixel_x), int(pixel_y))
+        if self.update_nav_status_callback:
+            self.update_nav_status_callback(msg)
 
 class ObjectListListener(Node):
     def __init__(self, callback):
