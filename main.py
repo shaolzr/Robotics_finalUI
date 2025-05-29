@@ -18,6 +18,8 @@ from threading import Thread
 from c8nav.msg import Nav2Status
 from std_msgs.msg import String
 import json
+import datetime
+from rclpy.executors import MultiThreadedExecutor
 
 # 初始化OpenAI客户端
 client = OpenAI()
@@ -547,6 +549,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         print("=== 初始化 MainWindow ===")
+        self.manipulation_status = None
+        self.task_id = 0  # 新增：维护任务id
+        self.available_objects = ["apple", "banana", "orange"]  # 新增：初始化可用对象列表，避免属性错误
         try:
             # Initialize ROS2 node instead
             print("Initializing ROS2 node...")
@@ -643,9 +648,6 @@ class MainWindow(QMainWindow):
             self.map_button.clicked.connect(self.show_map_view)
             print("View switching buttons created and connected")
 
-            # 启动ROS2监听线程
-            self.start_ros2_nav_listener()
-
         except Exception as e:
             print(f"UI Setup error: {str(e)}")
             raise e
@@ -699,7 +701,7 @@ class MainWindow(QMainWindow):
         
         if is_valid:
             # 发布命令
-            self.command_publisher.publish_command(result["object"], result["destination"])
+            self.command_publisher.publish_command(result["object"], result["destination"], result["id"])
             bot_reply = f"I will fetch {result['object']} and deliver it to the {result['destination']}."
         else:
             bot_reply = f"Error: {result}"
@@ -745,30 +747,6 @@ class MainWindow(QMainWindow):
                 return "Sorry, I could not understand your command."
             return str(data)
 
-    def start_ros2_nav_listener(self):
-        def ros2_spin():
-            rclpy.init()
-            node = ROS2NavListener(self.map_widget)
-            rclpy.spin(node)
-            node.destroy_node()
-            rclpy.shutdown()
-        Thread(target=ros2_spin, daemon=True).start()
-
-    # 初始化对象列表和命令发布者
-    def start_ros2_objects_listener(self):
-        def ros2_spin():
-            rclpy.init()
-            self.command_publisher = CommandPublisher()
-            node = ObjectListListener(self.update_available_objects)
-            rclpy.spin(node)
-            node.destroy_node()
-            rclpy.shutdown()
-        Thread(target=ros2_spin, daemon=True).start()
-
-    def update_available_objects(self, objects):
-        self.available_objects = objects
-        print(f'[MainWindow] Updated available objects: {objects}')
-
     def validate_command(self, command_json):
         try:
             command = json.loads(command_json)
@@ -790,11 +768,23 @@ class MainWindow(QMainWindow):
             if command["object"] not in self.available_objects:
                 return False, f"Object '{command['object']}' is not available"
             
+            # 新增：每次收到有效任务，id+1
+            self.task_id += 1
+            command["id"] = self.task_id
             return True, command
         except json.JSONDecodeError:
             return False, "Invalid JSON format"
         except Exception as e:
             return False, str(e)
+
+    def update_manipulation_status(self, status):
+        self.manipulation_status = status
+        print(f'[MainWindow] Manipulation status updated: {status}')
+        # 你可以在这里加UI刷新逻辑，比如显示在界面某个label上
+
+    def update_available_objects(self, objects):
+        self.available_objects = objects
+        print(f'[MainWindow] Updated available objects: {objects}')
 
 # 信号处理函数，用于优雅地关闭程序
 def signal_handler(signum, frame):
@@ -830,32 +820,32 @@ def main():
     global app, window
     print("=== 进入主函数 ===")
     try:
-        # 创建Qt应用程序实例
+        rclpy.init()  # 只在这里调用一次
         app = QApplication(sys.argv)
         print("QApplication 创建成功")
-        
-        # 加载像素风格字体
-        font_path = os.path.join(os.path.dirname(__file__), "fonts", "PressStart2P-Regular.ttf")
-        print("Font path exists:", os.path.exists(font_path))
-        font_id = QFontDatabase.addApplicationFont(font_path)
-        families = QFontDatabase.applicationFontFamilies(font_id)
-        print("Loaded font families:", families)
-        if families:
-            MainWindow.PIXEL_FONT_FAMILY = families[0]
-        else:
-            print("❌ Failed to load pixel font, falling back to Courier")
-            MainWindow.PIXEL_FONT_FAMILY = "Courier"
-        
-        # 创建并显示主窗口
-        print("正在创建主窗口...")
         window = MainWindow()
         print("主窗口创建成功")
-        
         print("正在显示窗口...")
         window.show()
         print("窗口显示成功")
-        
-        # 进入事件循环
+
+        # 创建所有 ROS2 node
+        nav_node = ROS2NavListener(window.map_widget)
+        manipulation_node = ManipulationStatusListener(window.update_manipulation_status)
+        window.command_publisher = CommandPublisher()
+        object_list_node = ObjectListListener(window.update_available_objects)
+
+        # 创建 executor 并添加所有 node
+        executor = MultiThreadedExecutor()
+        executor.add_node(nav_node)
+        executor.add_node(manipulation_node)
+        executor.add_node(window.command_publisher)
+        executor.add_node(object_list_node)
+
+        # 启动 ROS2 executor 在后台线程
+        from threading import Thread
+        Thread(target=executor.spin, daemon=True).start()
+
         print("进入事件循环...")
         sys.exit(app.exec())
     except Exception as e:
@@ -906,16 +896,39 @@ class CommandPublisher(Node):
         )
         print('[CommandPublisher] Successfully created command publisher.')
 
-    def publish_command(self, object_name, destination):
+    def publish_command(self, object_name, destination, task_id=None):
         msg = String()
         # 将命令信息序列化为 JSON 字符串
         command_data = {
+            "id": task_id,
             "object": object_name,
             "destination": destination
         }
         msg.data = json.dumps(command_data)
         self.publisher.publish(msg)
-        print(f'[CommandPublisher] Published command: fetch {object_name} to {destination}')
+        print(f'[CommandPublisher] Published command: fetch {object_name} to {destination} (id={task_id})')
+
+class ManipulationStatusListener(Node):
+    def __init__(self, update_status_callback):
+        super().__init__('manipulation_status_listener')
+        self.update_status_callback = update_status_callback
+        self.last_status = None
+        self.subscription = self.create_subscription(
+            String,
+            '/robot_status',
+            self.status_callback,
+            10
+        )
+        print('[ManipulationStatusListener] Listening on /robot_status')
+
+    def status_callback(self, msg):
+        status = msg.data
+        if status == self.last_status:
+            return
+        ts = datetime.datetime.now().strftime('%H:%M:%S')
+        print(f'[ManipulationStatusListener] [{ts}] status = {status}')
+        self.last_status = status
+        self.update_status_callback(status)
 
 if __name__ == '__main__':
     main()
