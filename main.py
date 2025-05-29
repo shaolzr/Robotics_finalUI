@@ -419,7 +419,7 @@ class MapWidget(QWidget):
 
         # 右侧框内居中放置farm.png，不做任何缩放
         map_label = QLabel(self)
-        map_pix = QPixmap("assets/farm.jpg")
+        map_pix = QPixmap("assets/farm2.png")
         print("farm.png isNull:", map_pix.isNull())
         if not map_pix.isNull():
             # 使用 scaled 方法将地图放大到原来的1.2倍
@@ -477,24 +477,24 @@ class MapWidget(QWidget):
             self.robot_label.adjustSize()
 
         # Add input fields and button for manual position update (using real coordinates now)
-        self.x_input = QTextEdit(self)
-        self.x_input.setFixedSize(60, 30)
-        # Position below the title, adjusted for the new larger map widget size
-        self.x_input.move(10, 100) # Adjusted position
-        self.x_input.setPlaceholderText("Real X") # Indicate real coordinate input
-        self.x_input.setText("1.961") # Set initial real X value (example: pick_up x)
+        # self.x_input = QTextEdit(self)
+        # self.x_input.setFixedSize(60, 30)
+        # # Position below the title, adjusted for the new larger map widget size
+        # self.x_input.move(10, 100) # Adjusted position
+        # self.x_input.setPlaceholderText("Real X") # Indicate real coordinate input
+        # self.x_input.setText("1.961") # Set initial real X value (example: pick_up x)
 
-        self.y_input = QTextEdit(self)
-        self.y_input.setFixedSize(60, 30)
-        # Position next to x_input, below the title
-        self.y_input.move(80, 100) # Adjusted position
-        self.y_input.setPlaceholderText("Real Y") # Indicate real coordinate input
-        self.y_input.setText("-0.349") # Set initial real Y value (example: pick_up y)
+        # self.y_input = QTextEdit(self)
+        # self.y_input.setFixedSize(60, 30)
+        # # Position next to x_input, below the title
+        # self.y_input.move(80, 100) # Adjusted position
+        # self.y_input.setPlaceholderText("Real Y") # Indicate real coordinate input
+        # self.y_input.setText("-0.349") # Set initial real Y value (example: pick_up y)
 
-        self.update_button = QPushButton("Update Robot Position", self) # Changed button text
+        # self.update_button = QPushButton("Update Robot Position", self) # Changed button text
         # Position next to y_input, below the title
-        self.update_button.move(150, 100) # Adjusted position
-        self.update_button.clicked.connect(self.update_position_button_clicked)
+        # self.update_button.move(150, 100) # Adjusted position
+        # self.update_button.clicked.connect(self.update_position_button_clicked)
 
         # Update initial robot position using an example real coordinate
         example_real_pos = np.array([1.961, -0.349]) # Example: pick_up real coordinate
@@ -615,38 +615,31 @@ class MainWindow(QMainWindow):
             self.right_view_container = QWidget(self.right_card)
             self.right_view_container.setGeometry(0, 0, 1000, 740) # Adjusted size
 
-            # Create the stacked layout and widgets
-            self.right_stacked_layout = QStackedLayout(self.right_view_container)
-
-            # Status and Map widgets need to be resized or designed to fit the new container size (1000x740)
-            # For now, just pass the container as parent, they might need internal adjustments.
-            self.status_widget = RobotStatusWidget(self.right_view_container)
+            # 只显示地图页面
             self.map_widget = MapWidget(self.right_view_container)
+            self.map_widget.setFixedSize(1000, 740)
+            self.map_widget.show()
 
-            # Ensure status_widget and map_widget adapt to the new size of right_view_container
-            self.status_widget.setFixedSize(1000, 740) # Set fixed size to match container
-            self.map_widget.setFixedSize(1000, 740)     # Set fixed size to match container
+            # # Create the stacked layout and widgets
+            # self.right_stacked_layout = QStackedLayout(self.right_view_container)
+            # self.status_widget = RobotStatusWidget(self.right_view_container)
+            # self.map_widget = MapWidget(self.right_view_container)
+            # self.status_widget.setFixedSize(1000, 740)
+            # self.map_widget.setFixedSize(1000, 740)
+            # self.right_stacked_layout.addWidget(self.status_widget)
+            # self.right_stacked_layout.addWidget(self.map_widget)
+            # self.right_stacked_layout.setCurrentIndex(1) # 只显示地图
+            # print("右侧状态区域创建成功")
 
-            self.right_stacked_layout.addWidget(self.status_widget)
-            self.right_stacked_layout.addWidget(self.map_widget)
-
-            # Set initial view (e.g., status view)
-            self.right_stacked_layout.setCurrentIndex(0) # 0 for status, 1 for map
-            print("右侧状态区域创建成功")
-
-            # Add buttons to switch views - Adjust vertical position
-            self.status_button = QPushButton("Show Status", self.right_card)
-            self.map_button = QPushButton("Show Map", self.right_card)
-
-            # Position the buttons (adjust y position as needed)
-            button_y = 10 # Example vertical position
-            self.status_button.move(10, button_y)
-            self.map_button.move(120, button_y)
-
-            # Connect button signals to slots
-            self.status_button.clicked.connect(self.show_status_view)
-            self.map_button.clicked.connect(self.show_map_view)
-            print("View switching buttons created and connected")
+            # # Add buttons to switch views - Adjust vertical position
+            # self.status_button = QPushButton("Show Status", self.right_card)
+            # self.map_button = QPushButton("Show Map", self.right_card)
+            # button_y = 10 # Example vertical position
+            # self.status_button.move(10, button_y)
+            # self.map_button.move(120, button_y)
+            # self.status_button.clicked.connect(self.show_status_view)
+            # self.map_button.clicked.connect(self.show_map_view)
+            # print("View switching buttons created and connected")
 
         except Exception as e:
             print(f"UI Setup error: {str(e)}")
@@ -697,12 +690,19 @@ class MainWindow(QMainWindow):
         self.add_user_message(transcript)
         
         # 验证命令
+        try:
+            # 先解析原始json，保留原始destination
+            original_command = json.loads(json_result)
+            original_dest = original_command.get("destination", "")
+        except Exception:
+            original_dest = ""
         is_valid, result = self.validate_command(json_result)
         
         if is_valid:
             # 发布命令
             self.command_publisher.publish_command(result["object"], result["destination"], result["id"])
-            bot_reply = f"I will fetch {result['object']} and deliver it to the {result['destination']}."
+            # bot_reply 用 dict转换前的内容
+            bot_reply = f"I will fetch {result['object']} and deliver it to the {original_dest}."
         else:
             bot_reply = f"Error: {result}"
         
@@ -750,24 +750,29 @@ class MainWindow(QMainWindow):
     def validate_command(self, command_json):
         try:
             command = json.loads(command_json)
-            
             # 检查是否有错误
             if "error" in command:
                 return False, command["error"]
-            
             # 检查必要字段
             if "object" not in command or "destination" not in command:
                 return False, "Missing required fields: object and destination"
-            
+            # 目的地映射
+            destination_map = {
+                "Mickey's House": "sink",
+                "Minnie's Bontique": "elevator",
+                "Pluto's Den": "wall"
+            }
+            # 如果 destination 是别名，转换为标准名
+            dest = command["destination"]
+            if dest in destination_map:
+                command["destination"] = destination_map[dest]
             # 验证目的地
             valid_destinations = ["sofa", "sink", "elevator", "lab", "wall"]
             if command["destination"] not in valid_destinations:
                 return False, f"Invalid destination. Must be one of: {valid_destinations}"
-            
             # 验证对象是否在可用列表中
             if command["object"] not in self.available_objects:
                 return False, f"Object '{command['object']}' is not available"
-            
             # 新增：每次收到有效任务，id+1
             self.task_id += 1
             command["id"] = self.task_id

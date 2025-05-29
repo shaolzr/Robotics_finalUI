@@ -86,7 +86,7 @@ The command must contain both an object to fetch and a destination to deliver it
 Use the following format:
 {
   "object": "object_name",  // The item to be fetched
-  "destination": "destination_name"  // Must be one of: "sofa", "sink", "elevator", "lab", "wall"
+  "destination": "destination_name"  // Must be one of: "Mickey's House", "Minnie's Bontique", "Pluto's Den", any similar words should be seen as these.
 }
 
 If the command cannot be parsed into this format (missing object or destination), return:
