@@ -21,6 +21,7 @@ import json
 import datetime
 from rclpy.executors import MultiThreadedExecutor
 import random
+import time
 
 # 初始化OpenAI客户端
 client = OpenAI()
@@ -37,9 +38,9 @@ def text_to_speech(text):
         # 生成语音文件
         with client.audio.speech.with_streaming_response.create(
             model="gpt-4o-mini-tts",
-            voice="coral",
+            voice="onyx",
             input=text,
-            instructions="Speak in a cheerful and positive tone.",
+            instructions="Speak in a friendly and slightly gruff farm worker tone.",
         ) as response:
             response.stream_to_file(speech_file_path)
         
@@ -561,9 +562,11 @@ class MainWindow(QMainWindow):
         self.latest_nav_status = None  # 新增：维护最新导航状态
         self.latest_manip_status = None  # 新增：维护最新机械臂状态
         self.task_id = 0
-        self.available_objects = ["apple", "banana", "orange"]
         # 感知物体相关
-        self._detected_object_times = {}  # {object_name: last_update_time}
+        self._detected_object_times = {
+            "orange": time.time(),
+            "apple": time.time()
+        }  # {object_name: last_update_time}, 默认包含orange和apple
         self.perception_timer = QTimer(self)
         self.perception_timer.timeout.connect(self._cleanup_detected_objects)
         self.perception_timer.start(1000)  # 每秒检查一次
@@ -789,7 +792,7 @@ class MainWindow(QMainWindow):
                 return False, command["error"]
             # 检查必要字段 Must be one of: {valid_destinations}"
             # 验证对象是否在可用列表中
-            if command["object"] not in self.available_objects:
+            if command["object"] not in self.detected_object_set:
                 return False, f"Object '{command['object']}' is not available"
             # 新增：每次收到有效任务，id+1
             self.task_id += 1
@@ -811,8 +814,8 @@ class MainWindow(QMainWindow):
         # 你可以在这里加UI刷新逻辑，比如显示在界面某个label上
 
     def update_available_objects(self, objects):
-        self.available_objects = objects
-        print(f'[MainWindow] Updated available objects: {objects}')
+        # This method is no longer needed as available objects are based on perception
+        pass
 
     # Helper: internal destination to alias (for display)
     def get_destination_alias(self, internal_name):
@@ -886,7 +889,6 @@ def main():
         nav_node = ROS2NavListener(window.map_widget, window.update_nav_status)
         manipulation_node = ManipulationStatusListener(window.update_manipulation_status)
         window.command_publisher = CommandPublisher()
-        object_list_node = ObjectListListener(window.update_available_objects)
         perception_node = PerceptionListener(window.update_detected_object)
 
         # 创建 executor 并添加所有 node
@@ -894,7 +896,6 @@ def main():
         executor.add_node(nav_node)
         executor.add_node(manipulation_node)
         executor.add_node(window.command_publisher)
-        executor.add_node(object_list_node)
         executor.add_node(perception_node)
 
         # 启动 ROS2 executor 在后台线程
@@ -930,19 +931,6 @@ class ROS2NavListener(Node):
         self.map_widget.update_robot_signal.emit(int(pixel_x), int(pixel_y))
         if self.update_nav_status_callback:
             self.update_nav_status_callback(msg)
-
-class ObjectListListener(Node):
-    def __init__(self, callback):
-        super().__init__('object_list_listener')
-        self.callback = callback
-        # 暂时注释掉订阅，等待确认正确的消息类型
-        # self.subscription = self.create_subscription(
-        #     ObjectList,
-        #     'object_list',
-        #     self.listener_callback,
-        #     10
-        # )
-        print('[ObjectListListener] Waiting for object_list message type confirmation.')
 
 class CommandPublisher(Node):
     def __init__(self):
