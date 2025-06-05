@@ -418,6 +418,7 @@ class MapWidget(QWidget):
         self.setFixedSize(1000, 740) # Use the size set in MainWindow
         self.setStyleSheet("background: transparent;")
         self.update_robot_signal.connect(self.update_robot_position)
+        self.current_robot_icon = "./assets/turtle1.png"  # 默认图标
 
         # 右侧框内居中放置farm.png，不做任何缩放
         map_label = QLabel(self)
@@ -465,18 +466,9 @@ class MapWidget(QWidget):
 
         # Add robot image
         self.robot_label = QLabel(self)
-        robot_pixmap = QPixmap("./assets/turtle1.png")
-        if not robot_pixmap.isNull():
-            # Scale the robot image if needed, e.g., to 30x30
-            scaled_robot_pixmap = robot_pixmap.scaled(30, 30, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.robot_label.setPixmap(scaled_robot_pixmap)
-            self.robot_label.resize(scaled_robot_pixmap.size())
-            # Set initial position (example coordinates)
-            self.update_robot_position(400, 400) # Example pixel coordinates
-            self.robot_label.adjustSize()
-        else:
-            self.robot_label.setText("Robot image not found")
-            self.robot_label.adjustSize()
+        self.set_robot_icon("IDLE")
+        self.update_robot_position(400, 400) # Example pixel coordinates
+        self.robot_label.adjustSize()
 
         # Add input fields and button for manual position update (using real coordinates now)
         # self.x_input = QTextEdit(self)
@@ -545,16 +537,40 @@ class MapWidget(QWidget):
         # Helper to safely call a function in the Qt main thread
         QTimer.singleShot(0, func)
 
+    def set_robot_icon(self, system_status):
+        """根据system_status切换robot图标"""
+        if system_status == "DELIVERING":
+            icon_path = "/home/yuzhez23@netid.washington.edu/Robotics_finalUI/assets/turtle_carry.png"
+        else:
+            icon_path = "./assets/turtle1.png"
+        if self.current_robot_icon != icon_path:
+            pixmap = QPixmap(icon_path)
+            if not pixmap.isNull():
+                scaled_pixmap = pixmap.scaled(30, 30, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self.robot_label.setPixmap(scaled_pixmap)
+                self.robot_label.resize(scaled_pixmap.size())
+                self.current_robot_icon = icon_path
+            else:
+                self.robot_label.setText("Robot image not found")
+                self.robot_label.adjustSize()
+
 # 主窗口类 - 应用程序的主要界面
 class MainWindow(QMainWindow):
     PIXEL_FONT_FAMILY = "Press Start 2P"  # 定义像素风格字体
-    # 目的地映射表，供全局使用
     DESTINATION_MAP = {
         "Mickey's House": "sink",
         "Minnie's Bontique": "elevator",
         "Pluto's Den": "wall"
     }
     PERCEPTION_TIMEOUT = 3.0  # seconds
+    SYSTEM_STATUS_MESSAGES = {
+        "IDLE": "All done! The farm is peaceful again. Ready for the next adventure!",
+        "TASK_QUEUED": "Got a new task! The farm crew is getting ready.",
+        "SEARCHING_OBJECT": "Looking around the farm for your item. Keep your eyes peeled!",
+        "PICKING_OBJECT": "Harvest time! Picking up the item now.",
+        "WAITING_FOR_DELIVERY": "Waiting for the delivery to start. The farm team is on standby.",
+        "DELIVERING": "On the move! Delivering your item across the GIX farm.",
+    }
     def __init__(self):
         super().__init__()
         print("=== 初始化 MainWindow ===")
@@ -562,6 +578,8 @@ class MainWindow(QMainWindow):
         self.latest_nav_status = None  # 新增：维护最新导航状态
         self.latest_manip_status = None  # 新增：维护最新机械臂状态
         self.task_id = 0
+        self.system_status_state = None  # 新增：维护system_status
+        self._last_system_status_state = None  # 新增：记录上一个system_status
         # 感知物体相关
         self._detected_object_times = {
             "orange": time.time(),
@@ -714,6 +732,9 @@ class MainWindow(QMainWindow):
             context += f"Navigation status: position=({nav.position.x:.2f}, {nav.position.y:.2f}), distance_to_goal={nav.distance_to_goal:.2f} meters , eta={eta:.2f} seconds\n"
         if manip:
             context += f"Manipulation status: {manip}\n"
+        # 加入system_status_state
+        if self.system_status_state:
+            context += f"System status: {self.system_status_state}\n"
         # Add perception context
         if self.detected_object_set:
             context += f"Available ojects: {list(self.detected_object_set)}\n"
@@ -842,6 +863,23 @@ class MainWindow(QMainWindow):
         # 只保留3秒内有效的唯一物体名
         return set(self._detected_object_times.keys())
 
+    def update_system_status(self, state):
+        if state != self.system_status_state:
+            # 状态发生切换，播报提示
+            msg = self.SYSTEM_STATUS_MESSAGES.get(state)
+            if msg:
+                try:
+                    import threading
+                    threading.Thread(target=text_to_speech, args=(msg,), daemon=True).start()
+                except Exception as e:
+                    print(f"TTS线程启动失败: {str(e)}")
+            # 通知地图切换robot图标
+            if hasattr(self, 'map_widget'):
+                self.map_widget.set_robot_icon(state)
+        self._last_system_status_state = self.system_status_state
+        self.system_status_state = state
+        print(f'[MainWindow] System status updated: {state}')
+
 # 信号处理函数，用于优雅地关闭程序
 def signal_handler(signum, frame):
     print("\nReceived Ctrl+C, shutting down...")
@@ -890,6 +928,7 @@ def main():
         manipulation_node = ManipulationStatusListener(window.update_manipulation_status)
         window.command_publisher = CommandPublisher()
         perception_node = PerceptionListener(window.update_detected_object)
+        system_status_node = SystemStatusListener(window.update_system_status)  # 新增
 
         # 创建 executor 并添加所有 node
         executor = MultiThreadedExecutor()
@@ -897,6 +936,7 @@ def main():
         executor.add_node(manipulation_node)
         executor.add_node(window.command_publisher)
         executor.add_node(perception_node)
+        executor.add_node(system_status_node)  # 新增
 
         # 启动 ROS2 executor 在后台线程
         from threading import Thread
@@ -994,6 +1034,23 @@ class PerceptionListener(Node):
         object_name = msg.object_name
         print(f'[PerceptionListener] Detected object: {object_name}')
         self.update_callback(object_name)
+
+class SystemStatusListener(Node):
+    def __init__(self, update_callback):
+        super().__init__('system_status_listener')
+        self.subscription = self.create_subscription(
+            String,
+            'system_status',
+            self.listener_callback,
+            10
+        )
+        self.update_callback = update_callback
+        print('[SystemStatusListener] Subscribed to system_status topic')
+
+    def listener_callback(self, msg):
+        state = msg.data
+        print(f'[SystemStatusListener] Received system status: {state}')
+        self.update_callback(state)
 
 if __name__ == '__main__':
     main()
