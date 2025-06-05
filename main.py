@@ -568,7 +568,7 @@ class MainWindow(QMainWindow):
         "TASK_QUEUED": "Got a new task! The farm crew is getting ready.",
         "SEARCHING_OBJECT": "Looking around the farm for your item. Keep your eyes peeled!",
         "PICKING_OBJECT": "Harvest time! Picking up the item now.",
-        "WAITING_FOR_DELIVERY": "Waiting for the delivery to start. The farm team is on standby.",
+        "READY_FOR_DELIVERY": "Waiting for the delivery to start. The farm team is on standby.",
         "DELIVERING": "On the move! Delivering your item across the GIX farm.",
     }
     def __init__(self):
@@ -578,7 +578,7 @@ class MainWindow(QMainWindow):
         self.latest_nav_status = None  # 新增：维护最新导航状态
         self.latest_manip_status = None  # 新增：维护最新机械臂状态
         self.task_id = 0
-        self.system_status_state = None  # 新增：维护system_status
+        self.system_status_state = "IDLE"  # 默认状态为IDLE
         self._last_system_status_state = None  # 新增：记录上一个system_status
         # 感知物体相关
         self._detected_object_times = {
